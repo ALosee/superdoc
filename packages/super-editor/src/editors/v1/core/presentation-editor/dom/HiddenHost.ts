@@ -44,7 +44,8 @@ export type HiddenHostElements = {
  * - Inherits invisibility and non-interactivity from the wrapper (`opacity: 0`,
  *   `pointer-events: none`). Does NOT use `visibility: hidden` — that prevents focusing.
  * - Does NOT set `aria-hidden="true"` because the editor must remain accessible.
- * - Sets `user-select: none` to prevent text selection in the hidden editor.
+ * - Uses `user-select: text` so native selection/composition semantics stay intact.
+ *   (`none` can interfere with IME composition behavior in some engines.)
  * - Sets `overflow-anchor: none` to prevent scroll anchoring issues when content changes.
  */
 export function createHiddenHost(doc: Document, widthPx: number): HiddenHostElements {
@@ -72,7 +73,8 @@ export function createHiddenHost(doc: Document, widthPx: number): HiddenHostElem
   }
   host.style.setProperty('overflow-anchor', 'none');
   // DO NOT use visibility:hidden - it prevents focusing!
-  host.style.setProperty('user-select', 'none');
+  // Keep native selection/composition semantics for IME reliability.
+  host.style.setProperty('user-select', 'text');
   // DO NOT set aria-hidden="true" on this element.
   // This hidden host contains the actual ProseMirror editor which must remain accessible
   // to screen readers and keyboard navigation. The viewport (#viewportHost) is aria-hidden

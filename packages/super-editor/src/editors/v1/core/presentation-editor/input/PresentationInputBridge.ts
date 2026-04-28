@@ -28,6 +28,7 @@ export class PresentationInputBridge {
   #onTargetChanged?: (target: HTMLElement | null) => void;
   #listeners: Array<{ type: string; handler: EventListener; target: EventTarget; useCapture: boolean }>;
   #currentTarget: HTMLElement | null = null;
+  #isComposing = false;
   #destroyed = false;
   #useWindowFallback: boolean;
 
@@ -96,7 +97,11 @@ export class PresentationInputBridge {
     textTargets.forEach((target) => {
       this.#addListener('beforeinput', this.#forwardTextEvent, target);
       this.#addListener('input', this.#forwardTextEvent, target);
-      this.#addListener('textInput', this.#forwardTextEvent, target);
+      // textInput is a legacy event that can duplicate modern beforeinput/input
+      // dispatches and break IME sequencing in some browsers.
+      if (typeof InputEvent === 'undefined') {
+        this.#addListener('textInput', this.#forwardTextEvent, target);
+      }
     });
 
     const contextTargets = this.#getListenerTargets();
@@ -111,6 +116,7 @@ export class PresentationInputBridge {
     });
     this.#listeners = [];
     this.#currentTarget = null;
+    this.#isComposing = false;
     this.#destroyed = true;
   }
 
@@ -122,7 +128,7 @@ export class PresentationInputBridge {
     if (nextTarget === this.#currentTarget) {
       return;
     }
-    if (this.#currentTarget) {
+    if (this.#currentTarget && this.#isComposing) {
       let synthetic: Event | null = null;
       if (typeof CompositionEvent !== 'undefined') {
         // Fire compositionend with empty data to complete any active composition.
@@ -135,6 +141,7 @@ export class PresentationInputBridge {
       }
       try {
         this.#currentTarget.dispatchEvent(synthetic);
+        this.#isComposing = false;
       } catch (error) {
         // Ignore dispatch failures - can happen if target was removed from DOM
         if (process.env.NODE_ENV === 'development') {
@@ -440,7 +447,7 @@ export class PresentationInputBridge {
       this.#dispatchToTarget(event, synthetic);
     };
 
-    if ((event as InputEvent).isComposing) {
+    if (this.#shouldDispatchTextEventSynchronously(event)) {
       dispatchSyntheticEvent();
       return;
     }
@@ -460,7 +467,6 @@ export class PresentationInputBridge {
     if (!staleOrigin) {
       return;
     }
-
     let synthetic: Event;
     if (typeof InputEvent !== 'undefined') {
       synthetic = new InputEvent(event.type, {
@@ -501,6 +507,7 @@ export class PresentationInputBridge {
     if (event.defaultPrevented) {
       return;
     }
+    this.#trackCompositionState(event.type);
     this.#markForwardedByBridge(event);
 
     let synthetic: Event;
@@ -528,6 +535,7 @@ export class PresentationInputBridge {
     if (!staleOrigin) {
       return;
     }
+    this.#trackCompositionState(event.type);
 
     let synthetic: Event;
     if (typeof CompositionEvent !== 'undefined') {
@@ -699,5 +707,32 @@ export class PresentationInputBridge {
    */
   #isCompositionKeyboardEvent(event: KeyboardEvent): boolean {
     return event.isComposing || event.keyCode === 229 || event.key === 'Dead' || event.key === 'Compose';
+  }
+
+  #shouldDispatchTextEventSynchronously(event: InputEvent | TextEvent): boolean {
+    if (event.type === 'beforeinput') {
+      return true;
+    }
+    const inputEvent = event as InputEvent;
+    if (inputEvent.isComposing) {
+      return true;
+    }
+    const inputType = inputEvent.inputType ?? '';
+    return (
+      inputType === 'insertCompositionText' ||
+      inputType === 'deleteCompositionText' ||
+      inputType === 'insertFromComposition' ||
+      inputType === 'deleteByComposition'
+    );
+  }
+
+  #trackCompositionState(eventType: string) {
+    if (eventType === 'compositionstart') {
+      this.#isComposing = true;
+      return;
+    }
+    if (eventType === 'compositionend') {
+      this.#isComposing = false;
+    }
   }
 }

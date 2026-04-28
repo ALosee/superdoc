@@ -93,10 +93,10 @@ describe('createHiddenHost', () => {
       expect(host.style.getPropertyValue('overflow-anchor')).toBe('none');
     });
 
-    it('sets user-select: none', () => {
+    it('sets user-select: text', () => {
       const { host } = createHiddenHost(mockDocument, 800);
 
-      expect(host.style.userSelect).toBe('none');
+      expect(host.style.userSelect).toBe('text');
     });
 
     it('does not set visibility: hidden (prevents focusing)', () => {

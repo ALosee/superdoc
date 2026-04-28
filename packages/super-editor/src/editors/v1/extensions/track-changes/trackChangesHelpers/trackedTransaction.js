@@ -3,6 +3,7 @@ import { TextSelection } from 'prosemirror-state';
 import { Fragment, Slice } from 'prosemirror-model';
 import { ySyncPluginKey } from 'y-prosemirror';
 import { replaceStep } from './replaceStep.js';
+import { markInsertion } from './markInsertion.js';
 import { addMarkStep } from './addMarkStep.js';
 import { removeMarkStep } from './removeMarkStep.js';
 import { replaceAroundStep } from './replaceAroundStep.js';
@@ -196,6 +197,62 @@ const foldCollapsedPlaceholderInsertion = ({ step, doc, user, insertedText, pend
 
 const getInsertedText = (step) => step.slice.content.textBetween(0, step.slice.content.size);
 
+const isSemanticNoopReplaceStep = ({ step, doc }) => {
+  if (!(step instanceof ReplaceStep)) {
+    return false;
+  }
+  if (step.from >= step.to) {
+    return false;
+  }
+  if (step.slice.openStart !== 0 || step.slice.openEnd !== 0) {
+    return false;
+  }
+  const insertedText = getInsertedText(step);
+  if (!insertedText) {
+    return false;
+  }
+  const replacedText = doc.textBetween(step.from, step.to);
+  return replacedText === insertedText;
+};
+
+const looksLikeImeCommittedPhrase = ({ step, doc }) => {
+  if (!(step instanceof ReplaceStep) || step.from >= step.to) {
+    return false;
+  }
+  const insertedText = getInsertedText(step);
+  if (!insertedText) {
+    return false;
+  }
+  const replacedText = doc.textBetween(step.from, step.to);
+  if (!replacedText || replacedText === insertedText) {
+    return false;
+  }
+
+  const hasCjkText = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(insertedText);
+  const looksLikePhoneticBuffer = /^[A-Za-z'`~^¨´\s,.;:/\\-]+$/.test(replacedText);
+  return hasCjkText && looksLikePhoneticBuffer;
+};
+
+const findNearbyTextRange = ({ doc, text, approxFrom, approxTo }) => {
+  if (!text) {
+    return null;
+  }
+  const textLength = Array.from(text).length;
+  if (!textLength) {
+    return null;
+  }
+
+  const minStart = Math.max(1, approxFrom - 3);
+  const maxStart = Math.min(doc.content.size - textLength, approxTo + 3);
+  for (let start = minStart; start <= maxStart; start += 1) {
+    const end = start + textLength;
+    if (doc.textBetween(start, end) === text) {
+      return { from: start, to: end };
+    }
+  }
+  return null;
+};
+
 const normalizeCompositionInsertStep = ({ step, doc, tr, user, pendingDeadKeyPlaceholder }) => {
   if (!(step instanceof ReplaceStep)) {
     return step;
@@ -299,7 +356,6 @@ const getPendingDeadKeyPlaceholder = ({ tr, newTr, user }) => {
   if (pos === undefined) {
     return null;
   }
-
   return {
     pos,
     placeholderChar: insertedText,
@@ -313,6 +369,55 @@ const getPendingDeadKeyPlaceholder = ({ tr, newTr, user }) => {
  * @returns {import('prosemirror-state').Transaction} Modified transaction.
  */
 export const trackedTransaction = ({ tr, state, user, replacements = 'paired' }) => {
+  const compositionMeta = tr.getMeta('composition');
+  const isActiveCompositionTransaction = compositionMeta !== undefined;
+  if (isActiveCompositionTransaction) {
+    const firstStep = tr.steps[0];
+    const shouldRewriteImeCommit =
+      tr.steps.length === 1 &&
+      firstStep instanceof ReplaceStep &&
+      looksLikeImeCommittedPhrase({ step: firstStep, doc: state.doc });
+    if (!shouldRewriteImeCommit) {
+      // Keep IME composition transactions untouched by track-changes rewrites.
+      // Rewriting intermediate composition steps can restart IME composition and
+      // cause first-letter loss (e.g. ni'hao -> n哦好).
+      mergeTrackChangesMeta(tr, {
+        pendingDeadKeyPlaceholder: null,
+      });
+      return tr;
+    }
+    const imeCommitTr = state.tr;
+    const fixedTimeTo10Mins = Math.floor(Date.now() / 600000) * 600000;
+    const date = new Date(fixedTimeTo10Mins).toISOString();
+    const insertedText = getInsertedText(firstStep);
+    const insertedLength = Array.from(insertedText).length;
+    imeCommitTr.step(firstStep);
+    if (insertedLength > 0) {
+      markInsertion({
+        tr: imeCommitTr,
+        from: firstStep.from,
+        to: firstStep.from + insertedLength,
+        user,
+        date,
+      });
+    }
+    if (tr.getMeta('inputType')) {
+      imeCommitTr.setMeta('inputType', tr.getMeta('inputType'));
+    }
+    if (tr.getMeta('uiEvent')) {
+      imeCommitTr.setMeta('uiEvent', tr.getMeta('uiEvent'));
+    }
+    imeCommitTr.setMeta('composition', tr.getMeta('composition'));
+    mergeTrackChangesMeta(imeCommitTr, {
+      pendingDeadKeyPlaceholder: null,
+    });
+    const boundedPos = Math.max(0, Math.min(firstStep.from + insertedLength, imeCommitTr.doc.content.size));
+    imeCommitTr.setSelection(TextSelection.near(imeCommitTr.doc.resolve(boundedPos), 1));
+    if (tr.scrolledIntoView) {
+      imeCommitTr.scrollIntoView();
+    }
+    return imeCommitTr;
+  }
   const onlyInputTypeMeta = ['inputType', 'uiEvent', 'paste', 'pointer', 'composition'];
   const notAllowedMeta = ['historyUndo', 'historyRedo', 'acceptReject'];
   const isProgrammaticInput = tr.getMeta('inputType') === 'programmatic';
@@ -344,6 +449,48 @@ export const trackedTransaction = ({ tr, state, user, replacements = 'paired' })
     let step = originalStep.map(map);
 
     if (!step) {
+      return;
+    }
+    if (isSemanticNoopReplaceStep({ step, doc })) {
+      const insertMarkType = doc.type.schema.marks[TrackInsertMarkName];
+      const hasInsertionMark = insertMarkType ? doc.rangeHasMark(step.from, step.to, insertMarkType) : false;
+      const isLikelyImeFinalizeNoop =
+        tr.getMeta('composition') === undefined &&
+        (tr.getMeta('inputType') === null || tr.getMeta('inputType') === undefined) &&
+        tr.steps.length === 1 &&
+        step.from < step.to;
+      if (isLikelyImeFinalizeNoop && !hasInsertionMark) {
+        const noopText = doc.textBetween(step.from, step.to);
+        const applyInsertionMark = (from, to) => {
+          markInsertion({
+            tr: newTr,
+            from,
+            to,
+            user,
+            date,
+          });
+          const markType = newTr.doc.type.schema.marks[TrackInsertMarkName];
+          return markType ? newTr.doc.rangeHasMark(from, to, markType) : false;
+        };
+
+        let markApplied = applyInsertionMark(step.from, step.to);
+        let fallbackRange = null;
+        if (!markApplied) {
+          fallbackRange = findNearbyTextRange({
+            doc: newTr.doc,
+            text: noopText,
+            approxFrom: step.from,
+            approxTo: step.to,
+          });
+          if (fallbackRange) {
+            markApplied = applyInsertionMark(fallbackRange.from, fallbackRange.to);
+          }
+        }
+        return;
+      }
+      // Skip tracking for semantic no-op replaces (same text before/after).
+      // IME finalize can emit this after composition, and tracking it would
+      // incorrectly generate paired delete+insert for identical content.
       return;
     }
 

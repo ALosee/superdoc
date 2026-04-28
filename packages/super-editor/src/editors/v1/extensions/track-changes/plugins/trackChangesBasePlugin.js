@@ -27,7 +27,6 @@ export const TrackChangesBasePlugin = () => {
           meta && Object.prototype.hasOwnProperty.call(meta, 'pendingDeadKeyPlaceholder')
             ? meta.pendingDeadKeyPlaceholder
             : oldState.pendingDeadKeyPlaceholder;
-
         // Handle meta commands that require full recalculation
         if (meta && meta.type === 'TRACK_CHANGES_ENABLE') {
           return {

@@ -2710,6 +2710,9 @@ export class Editor extends EventEmitter<EditorEventMap> {
       const skipTrackChanges = transactionToApply.getMeta('skipTrackChanges') === true;
 
       const shouldTrack = (isTrackChangesActive || forceTrackChanges) && !skipTrackChanges;
+      const isCompositionLike =
+        transactionToApply.getMeta('composition') !== undefined ||
+        transactionToApply.getMeta('inputType') === 'insertCompositionText';
       if (shouldTrack && forceTrackChanges && !this.options.user) {
         throw new Error('forceTrackChanges requires a user to be configured on the editor instance.');
       }

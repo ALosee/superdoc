@@ -164,6 +164,10 @@ export const replaceStep = ({
   originalStepIndex,
   replacements = 'paired',
 }) => {
+  const insertedTextRaw = step.slice.content.textBetween(0, step.slice.content.size);
+  const replacedTextRaw = newTr.doc.textBetween(step.from, step.to);
+  const isCompositionLike =
+    tr?.getMeta?.('composition') !== undefined || tr?.getMeta?.('inputType') === 'insertCompositionText';
   const originalRange = { from: step.from, to: step.to, sliceSize: step.slice.content.size };
   step = normalizeReplaceStepSingleCharDelete({ step, doc: newTr.doc });
   const stepWasNormalized =
@@ -346,7 +350,6 @@ export const replaceStep = ({
 
     map.appendMapping(deletionMap);
   }
-
   // Add meta to the new transaction.
   newTr.setMeta(TrackChangesBasePluginKey, meta);
   newTr.setMeta(CommentsPluginKey, { type: 'force' });

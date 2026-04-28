@@ -226,7 +226,7 @@ describe('PresentationInputBridge - Context Menu Handling', () => {
       layoutSurface.addEventListener(
         'contextmenu',
         (e) => {
-          (e as MouseEvent & { [key: string]: boolean })[CONTEXT_MENU_HANDLED_FLAG] = true;
+          (e as unknown as MouseEvent & { [key: string]: boolean })[CONTEXT_MENU_HANDLED_FLAG] = true;
         },
         true, // capture phase
       );
@@ -362,6 +362,95 @@ describe('PresentationInputBridge - Context Menu Handling', () => {
       expect(targetFocusSpy).not.toHaveBeenCalled();
       expect(targetDispatchSpy).not.toHaveBeenCalled();
       expect(staleEvent.defaultPrevented).toBe(false);
+    });
+  });
+
+  describe('IME composition target change behavior', () => {
+    it('does not synthesize compositionend when target changes without active composition', () => {
+      const nextTarget = document.createElement('div');
+      document.body.appendChild(nextTarget);
+
+      const getTargetDomMock = vi.fn<() => HTMLElement | null>();
+      getTargetDomMock.mockReturnValueOnce(targetDom);
+      getTargetDomMock.mockReturnValue(nextTarget);
+
+      bridge.destroy();
+      bridge = new PresentationInputBridge(windowRoot, layoutSurface, getTargetDomMock, isEditable);
+      bridge.bind();
+
+      const compositionEndSpy = vi.fn();
+      targetDom.addEventListener('compositionend', compositionEndSpy);
+
+      bridge.notifyTargetChanged();
+
+      expect(compositionEndSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not forward legacy textInput when InputEvent is available', () => {
+      const dispatchSpy = vi.spyOn(targetDom, 'dispatchEvent');
+      const textInputEvent = new Event('textInput', { bubbles: true, cancelable: true });
+      Object.defineProperty(textInputEvent, 'data', { value: '中', configurable: true });
+
+      layoutSurface.dispatchEvent(textInputEvent);
+
+      expect(
+        dispatchSpy.mock.calls.some(([event]) => {
+          const dispatched = event as Event;
+          return dispatched.type === 'textInput';
+        }),
+      ).toBe(false);
+    });
+
+    it('dispatches insertFromComposition before a following compositionend', () => {
+      const callOrder: string[] = [];
+      targetDom.addEventListener('beforeinput', () => {
+        callOrder.push('beforeinput');
+      });
+      targetDom.addEventListener('compositionend', () => {
+        callOrder.push('compositionend');
+      });
+
+      const beforeInputEvent = new InputEvent('beforeinput', {
+        data: '你',
+        inputType: 'insertFromComposition',
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(beforeInputEvent, 'isComposing', { value: false, writable: false });
+
+      layoutSurface.dispatchEvent(beforeInputEvent);
+      layoutSurface.dispatchEvent(
+        new CompositionEvent('compositionend', { data: '你', bubbles: true, cancelable: true }),
+      );
+
+      expect(callOrder[0]).toBe('beforeinput');
+      expect(callOrder[1]).toBe('compositionend');
+    });
+
+    it('dispatches non-composing insertText before a following compositionend', () => {
+      const callOrder: string[] = [];
+      targetDom.addEventListener('beforeinput', () => {
+        callOrder.push('beforeinput');
+      });
+      targetDom.addEventListener('compositionend', () => {
+        callOrder.push('compositionend');
+      });
+
+      const beforeInputEvent = new InputEvent('beforeinput', {
+        data: '啊',
+        inputType: 'insertText',
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(beforeInputEvent, 'isComposing', { value: false, writable: false });
+
+      layoutSurface.dispatchEvent(beforeInputEvent);
+      layoutSurface.dispatchEvent(
+        new CompositionEvent('compositionend', { data: '啊', bubbles: true, cancelable: true }),
+      );
+
+      expect(callOrder[0]).toBe('beforeinput');
+      expect(callOrder[1]).toBe('compositionend');
     });
   });
 });

@@ -2285,14 +2285,18 @@ export class PresentationEditor extends EventEmitter {
       kind?: 'trackedChange' | 'comment';
     }
   > {
+    const helperPositions = collectCommentPositionsFromHelper(this.#editor?.state?.doc ?? null, {
+      commentMarkName: CommentMarkName,
+      trackChangeMarkNames: [TrackInsertMarkName, TrackDeleteMarkName, TrackFormatMarkName],
+      storyKey: BODY_STORY_KEY,
+    });
+    const indexedTrackedPositions = this.#collectIndexedTrackedChangePositions();
+    const renderedTrackedPositions = this.#collectRenderedTrackedChangePositions();
+
     return {
-      ...collectCommentPositionsFromHelper(this.#editor?.state?.doc ?? null, {
-        commentMarkName: CommentMarkName,
-        trackChangeMarkNames: [TrackInsertMarkName, TrackDeleteMarkName, TrackFormatMarkName],
-        storyKey: BODY_STORY_KEY,
-      }),
-      ...this.#collectIndexedTrackedChangePositions(),
-      ...this.#collectRenderedTrackedChangePositions(),
+      ...helperPositions,
+      ...indexedTrackedPositions,
+      ...renderedTrackedPositions,
     };
   }
 
@@ -6746,6 +6750,7 @@ export class PresentationEditor extends EventEmitter {
     const layout = this.#layoutState.layout;
     const editorState = activeEditor.state;
     const selection = editorState?.selection;
+    this.#syncImeAnchorToSelection(activeEditor);
 
     if (!selection) {
       try {
@@ -6868,6 +6873,52 @@ export class PresentationEditor extends EventEmitter {
         this.#scrollActiveEndIntoView(headLayout.pageIndex);
       }
     }
+  }
+
+  /**
+   * Keep the hidden focused editor host spatially near the visible caret.
+   *
+   * IME candidate windows anchor to the focused contenteditable's native caret.
+   * In presentation mode that contenteditable lives in an off-screen hidden host.
+   * Repositioning the host wrapper to the visible caret prevents large candidate
+   * window offsets while preserving scroll isolation (`position:fixed` + 1x1 clip).
+   */
+  #syncImeAnchorToSelection(activeEditor: Editor | null | undefined): void {
+    const targetDom = activeEditor?.view?.dom as HTMLElement | null | undefined;
+    const wrapper =
+      targetDom?.closest?.(
+        '.presentation-editor__hidden-host-wrapper, .presentation-editor__story-hidden-host-wrapper',
+      ) ?? null;
+    if (!wrapper) {
+      return;
+    }
+
+    const selection = activeEditor?.view?.state?.selection;
+    if (!selection) return;
+
+    const head = typeof selection.head === 'number' ? selection.head : null;
+    if (head == null) return;
+    const caretLayout = this.#computeCaretLayoutRect(head);
+    if (!caretLayout) {
+      return;
+    }
+
+    const client = this.denormalizeClientPoint(caretLayout.x, caretLayout.y, caretLayout.pageIndex, caretLayout.height);
+    if (!client) return;
+
+    const doc = wrapper.ownerDocument;
+    const win = doc?.defaultView;
+    if (!doc || !win) return;
+    const viewportWidth = Math.max(1, win.innerWidth || doc.documentElement?.clientWidth || 1);
+    const viewportHeight = Math.max(1, win.innerHeight || doc.documentElement?.clientHeight || 1);
+    const anchorX = Math.min(Math.max(0, Math.round(client.x)), viewportWidth - 1);
+    const anchorY = Math.min(
+      Math.max(0, Math.round(client.y + (client.height ?? caretLayout.height))),
+      viewportHeight - 1,
+    );
+
+    wrapper.style.setProperty('left', `${anchorX}px`);
+    wrapper.style.setProperty('top', `${anchorY}px`);
   }
 
   /**

@@ -28,6 +28,9 @@ export const handleEnter = (editor) => {
 
 export const handleBackspace = (editor) => {
   const { view } = editor;
+  if (view?.composing) {
+    return false;
+  }
   // Close undo group — see comment in handleEnter.
   dispatchHistoryBoundary(view);
 
