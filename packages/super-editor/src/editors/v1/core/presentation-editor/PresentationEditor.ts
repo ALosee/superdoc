@@ -6889,7 +6889,7 @@ export class PresentationEditor extends EventEmitter {
       targetDom?.closest?.(
         '.presentation-editor__hidden-host-wrapper, .presentation-editor__story-hidden-host-wrapper',
       ) ?? null;
-    if (!wrapper) {
+    if (!wrapper || !(wrapper instanceof HTMLElement)) {
       return;
     }
 
